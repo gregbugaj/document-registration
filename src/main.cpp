@@ -103,7 +103,6 @@ int main(int argc, char const *argv[]) {
     cv::Mat imgGrayscale;
     cv::Mat imgBinarized;
 
-
 /*    //3508 x 2480
     Size size(2480, 3508);// 2480 x 3508
     Mat dst;//dst image
@@ -205,6 +204,8 @@ void alignForms(const std::string &refFilename, const std::string &targetFilenam
     std::vector<std::vector<cv::Point>> refSquares;
     std::vector<std::vector<cv::Point>> targetSquares;
 
+    detectContours(targetEdges);
+
     Mat refSquareImage = findSquares(refEdged, refSquares);
     Mat targetSquareImage = findSquares(targetEdges, targetSquares);
 
@@ -222,8 +223,7 @@ void alignForms(const std::string &refFilename, const std::string &targetFilenam
     Mat alignmentImage, h;
     // Align images
     std::cout << "Aligning images ..." << std::endl;
-//    alignRegistrationPoints(refSquareImage, targetSquareImage, alignmentImage, h);
-    alignRegistrationPoints(refImage, targetImage, alignmentImage, h);
+    alignRegistrationPoints(refSquareImage, targetSquareImage, alignmentImage, h);
     cv::imwrite("/tmp/ips/alignmentImage.png", alignmentImage);
 
     high_resolution_clock::time_point t2 = high_resolution_clock::now();
@@ -232,12 +232,25 @@ void alignForms(const std::string &refFilename, const std::string &targetFilenam
     std::cout << std::endl;
 }
 
+void matchFeatures(const cv::Mat &query, const cv::Mat &target,
+                   std::vector<cv::DMatch> &goodMatches) {
+    float RATIO = .75f;
+    std::vector<std::vector<cv::DMatch>> matches;
+//    cv::Ptr<cv::FlannBasedMatcher> matcher = cv::FlannBasedMatcher::create();
+    cv::FlannBasedMatcher matcher = cv::FlannBasedMatcher(cv::makePtr<cv::flann::LshIndexParams>(12, 20, 2));
+    // Find 2 best matches for each descriptor to make later the second neighbor test.
+    matcher.knnMatch(query, target, matches, 2);
+    // Second neighbor ratio test.
+    /*   for (unsigned int i = 0; i < matches.size(); ++i) {
+           if (matches[i][0].distance < matches[i][1].distance * RATIO)
+               goodMatches.push_back(matches[i][0]);
+       }*/
+}
+
 void alignRegistrationPoints(Mat &refImage, Mat &targetImage, Mat &alignmentImage, Mat &h) {
-    float GOOD_MATCH_PERCENT = 0.15f;
+    float GOOD_MATCH_PERCENT = 0.25f;
     // Convert images to grayscale
     Mat im1Gray = refImage, im2Gray = targetImage;
-/*    cvtColor(refImage, im1Gray, CV_BGR2GRAY);
-    cvtColor(targetImage, im2Gray, CV_BGR2GRAY);*/
 
     // Variables to store keypoints and descriptors
     std::vector<KeyPoint> keypoints1, keypoints2;
@@ -245,13 +258,27 @@ void alignRegistrationPoints(Mat &refImage, Mat &targetImage, Mat &alignmentImag
 
     // Detect ORB features and compute descriptors.
     Ptr<Feature2D> detector = ORB::create(500);
-    detector->detectAndCompute(im1Gray, Mat(), keypoints1, descriptors1);
-    detector->detectAndCompute(im2Gray, Mat(), keypoints2, descriptors2);
+    detector->detectAndCompute(im1Gray, Mat(), keypoints1, descriptors1, false);
+    detector->detectAndCompute(im2Gray, Mat(), keypoints2, descriptors2, false);
+
+    cv::Scalar color(rand() & 255, rand() & 255, rand() & 255);
+
+    cv::Mat kpRefImage(refImage.size(), CV_8UC3, cv::Scalar(255, 255, 255));
+    drawKeypoints(refImage, keypoints1, kpRefImage, color, DrawMatchesFlags::DRAW_OVER_OUTIMG);
+    imwrite("/tmp/ips/kpRefImage.jpg", kpRefImage);
+
+    cv::Mat kpTargetImage(targetImage.size(), CV_8UC3, cv::Scalar(255, 255, 255));
+    drawKeypoints(targetImage, keypoints2, kpTargetImage, color, DrawMatchesFlags::DRAW_OVER_OUTIMG);
+    imwrite("/tmp/ips/kpTargetImage.jpg", kpTargetImage);
 
     // Match features.
-    std::vector<DMatch> matches;
-    Ptr<DescriptorMatcher> matcher = DescriptorMatcher::create("BruteForce-Hamming");
+    std::vector<cv::DMatch> matches;
+    auto matcher = DescriptorMatcher::create("BruteForce-Hamming");
     matcher->match(descriptors1, descriptors2, matches, Mat());
+
+/*    cv::FlannBasedMatcher matcher = cv::FlannBasedMatcher(cv::makePtr<cv::flann::LshIndexParams>(12, 20, 2));
+    // Match features.
+    matchFeatures(descriptors1, descriptors2, matches);*/
 
     // Sort matches by score
     std::sort(matches.begin(), matches.end());
@@ -272,8 +299,9 @@ void alignRegistrationPoints(Mat &refImage, Mat &targetImage, Mat &alignmentImag
         points2.push_back(keypoints2[matches[i].trainIdx].pt);
     }
 
-    // Find homography
-    h = findHomography(points1, points2, LMEDS);
+    // Find homography RANSAC LMEDS
+//    h = findHomography(points1, points2, LMEDS);
+    h = findHomography(points1, points2, RANSAC, 5.0);
     // Use homography to warp image
     warpPerspective(refImage, alignmentImage, h, targetImage.size());
 }
@@ -340,13 +368,12 @@ Mat findSquares(const Mat &image, std::vector<std::vector<cv::Point>> &squares) 
     for (size_t i = 0; i < squares.size() - 1; i++) {
         cv::Rect r = cv::boundingRect(cv::Mat(squares[i]));
         cv::Mat s = image(r);
-        std::cout << r.x << " :: " << r.y << std::endl;
+//        std::cout << r.x << " :: " << r.y << std::endl;
         /*
          std::stringstream temp_stream;
         temp_stream << "/home/greg/dev/document-registration/test-deck/squared/square" << " - " << i << ".jpg";
         std::cout << r;
         */
-
         cv::Rect r2 = cv::Rect_(r.x, r.y, 2, 2);
         cv::Scalar color(rand() & 255, rand() & 255, rand() & 255);
         cv::rectangle(squareImage, r, color);
@@ -374,31 +401,37 @@ void detectContours(cv::Mat &src) {
     std::vector<Vec4i> hierarchy;
 
     //CV_RETR_CCOMP CV_RETR_EXTERNAL
-    cv::findContours(src, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_SIMPLE);
+    cv::findContours(src, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
 
     for (int idx = 0; idx >= 0; idx = hierarchy[idx][0]) {
         Scalar color(rand() & 255, rand() & 255, rand() & 255);
         drawContours(dst, contours, idx, color, CV_FILLED, 8, hierarchy);
     }
 
+    std::vector<cv::Point> approx;
     cv::Mat contourImage(src.size(), CV_8UC3, cv::Scalar(0, 0, 0));
     for (size_t idx = 0; idx < contours.size(); idx++) {
+        // approximate contour with accuracy proportional  to the contour perimeter
+        cv::approxPolyDP(Mat(contours[idx]), approx, arcLength(Mat(contours[idx]), false) * 0.02, false);
+
+        std::cout << approx.size() << std::endl;
         Scalar color(rand() & 255, rand() & 255, rand() & 255);
         auto contour = contours[idx];
         auto bb = cv::boundingRect(contour);
         auto aspect = bb.width / (float) bb.height;
         auto area = bb.area();
-        if (area < 1000) {
-            continue;
-        }
 
-        std::cout << bb << " :: " << aspect << " == " << area << std::endl;
-        cv::drawContours(contourImage, contours, idx, color);
+        // approx.size() == 4 &&
+        if (
+                fabs(contourArea(Mat(approx))) > 500
+                ) {
+
+            cv::drawContours(contourImage, contours, idx, color);
+        }
     }
 
-    cv::imwrite("/home/greg/dev/document-registration/test-deck/hicfa1500-contours-contourImage.png", contourImage);
-    cv::imwrite("/home/greg/dev/document-registration/test-deck/hicfa1500-contours.png", dst);
-    waitKey(0);
+    cv::imwrite("/tmp/ips/contourImage.png", contourImage);
+    cv::imwrite("/tmp/ips/contourImage-dst.png", dst);
 }
 
 /*!
