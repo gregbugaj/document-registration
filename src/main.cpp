@@ -5,9 +5,11 @@
 #include <leptonica/allheaders.h>
 #include <opencv2/opencv.hpp>
 #include <version.h>
-#include<opencv2/highgui/highgui.hpp>
-#include<opencv2/imgproc/imgproc.hpp>
 #include<string>
+#include <opencv2/dnn.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
+
 
 using namespace mxnet::cpp;
 using namespace std::chrono;
